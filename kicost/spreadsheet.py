@@ -118,6 +118,8 @@ class Spreadsheet(object):
     SORT_DISTRIBUTORS = True
     # Columns used for the global section
     GLOBAL_COLUMNS = {
+       
+        
         'refs': {
             'col': 0,
             'level': 0,  # Outline level (or hierarchy level) for this column.
@@ -190,14 +192,23 @@ class Spreadsheet(object):
         'ext_price': {
             'col': 8,
             'level': 0,
-            'label': 'Ext$',
+            'label': 'Total',
             'width': 15,  # Displays up to $9,999,999.99 without "###".
             'comment': 'Minimum extended price for each part across all distributors.',
-            'static': False,
+            'static': True,
         },
         # TODO: 'short' Slack quantity. (Not handled, yet.)
     }
     DISTRIBUTOR_COLUMNS = {
+         'rechnung': {
+            'col': 7,
+            'level': 4,
+            'label': 'Rechnung',
+            'width': None,
+            'comment': 'Rechnung pro Bauteil.\nWird zur benötigten Menge addiert.',
+        },
+
+   
         'avail': {
             'col': 0,
             # column offset within this distributor range of the worksheet.
@@ -234,7 +245,7 @@ class Spreadsheet(object):
         'ext_price': {
             'col': 4,
             'level': 0,
-            'label': 'Ext$',
+            'label': 'total',
             'width': 15,  # Displays up to $9,999,999.99 without "###".
             'comment': '(Unit Price) x (Purchase Qty) of each part from this distributor.\nRed -> Next price break is cheaper.\nGreen -> Cheapest supplier.'
         },
@@ -245,6 +256,14 @@ class Spreadsheet(object):
             'width': 15,
             'comment': 'Distributor-assigned catalog number for each part and link to it\'s web page (ctrl-click). Extra distributor data is shown as comment.'
         },
+        'best_price': {
+            'col': 6,  # بعد عمود total
+            'level': 0,
+            'label': 'Best Price',
+            'width': 15,
+            'comment': 'Zeigt nur den günstigsten Preis je Bauteil (0, wenn nicht der günstigste).'
+        },
+
     }
     # Cell formats
     WRK_FORMATS = {
@@ -264,11 +283,10 @@ class Spreadsheet(object):
         'found_part_pct': {'font_size': 10, 'bold': True, 'italic': True, 'valign': 'vcenter'},
         'best_price': {'bg_color': '#80FF80', },
         'not_manf_codes': {'bg_color': '#AAAAAA'},
-        'not_available': {'bg_color': '#FF0000', 'font_color': 'white'},
-        'order_too_much': {'bg_color': '#FF0000', 'font_color': 'white'},
+        'not_available': {'bg_color': '#FF0000', 'font_color': 'black'},
+        'order_too_much': {'bg_color': '#FF9900', 'font_color': 'white'},
         'order_min_qty': {'bg_color': '#FFFF00'},
         'too_few_available': {'bg_color': '#FF9900', 'font_color': 'black'},
-        'too_few_purchased': {'bg_color': '#FFFF00'},
         'not_stocked': {'font_color': '#909090', 'align': 'right', 'valign': 'vcenter'},
         'currency': {'valign': 'vcenter'},
         'currency_unit': {'valign': 'vcenter'},
@@ -686,7 +704,10 @@ def add_globals_to_worksheet(ss, start_row, start_col, total_cost_row, parts, di
 
     # Add the global part data to the spreadsheet.
     col_qty = start_col + col['qty']
+    col_purch = start_col + col['qty'] + 1
     col_refs = start_col + col['refs']
+   
+
     for part in parts:
 
         # Enter part references.
@@ -726,6 +747,34 @@ def add_globals_to_worksheet(ss, start_row, start_col, total_cost_row, parts, di
 
         # Enter total part quantity needed.
         total = part.qty_total_spreadsheet
+        from math import ceil
+        # --- PURCH-Regel (Berechne Bestellmenge) ---
+        try:
+            # Preis lesen (falls vorhanden)
+            if hasattr(part, 'unit_price') and part.unit_price:
+                unit_val = float(str(part.unit_price).replace('€', '').replace(',', '.').strip())
+            elif hasattr(part, 'price_tiers') and part.price_tiers:
+                unit_val = float(list(part.price_tiers.values())[0])
+            else:
+                unit_val = 0.0
+        except Exception:
+            unit_val = 0.0
+
+        # Menge aus der Spalte Qty
+        try:
+            qty_val = float(total)
+        except Exception:
+            qty_val = 0.0
+
+        # Regel: Wenn Preis > 1.50 € → +1, sonst +15 %
+        if unit_val > 1.5:
+            purch_val = int(qty_val) + 1
+        else:
+            purch_val = int(ceil(qty_val * 1.15))
+
+        # Schreibe das Ergebnis in die Purch-Spalte (direkt rechts von Qty)
+        wks.write(row, start_col + col['qty'] + 1, purch_val, ss.wrk_formats['part_format'])
+
         if num_prj > 1:
             # Multifiles BOM case, write each quantity and after,
             # in the 'qty' column the total quantity as ceil of
@@ -773,12 +822,38 @@ def add_global_prices_to_workheet(ss, start_row, start_col, total_cost_row, part
     col_dist = start_col + num_cols
     dist_width = len(ss.DISTRIBUTOR_COLUMNS)
     dist_cols = {}
+    # columns = ss.DISTRIBUTOR_COLUMNS
+    # col_ext_price = start_col + col['ext_price']
+   
     for dist in dist_list:
+        # --- Berechne Purch für kicoalle Anbieter-Spalten ---
+    
         dist_cols[dist] = col_dist
         col_dist += dist_width
+        col_best_price = col_dist + 1
+       
+        
+       # ---- Best Price pro Distributor ----
+        # col_best_price = start_col + columns['best_price']['col']
+
+        # best_price_formula = (
+        #     '=IF({this_total}=MIN({col_letter}{first}:{col_letter}{last}),{this_total},0)'
+        # ).format(
+        #     this_total=xl_rowcol_to_cell(row, start_col + columns['ext_price']['col']),
+        #     col_letter=xlsxwriter.utility.xl_col_to_name(start_col + columns['ext_price']['col']),
+        #     first=PART_INFO_FIRST_ROW + 1,
+        #     last=PART_INFO_LAST_ROW + 1
+        # )
+
+        # wks.write_formula(row, col_best_price, best_price_formula, ss.wrk_formats['part_format'])
+
+
     col_ext_price = start_col + col['ext_price']
     col_qty = start_col + col['qty']
     col_unit_price = start_col + col['unit_price']
+    # -------- Best Price Formula --------
+
+
 
     for part in parts:
         # Gather the cell references for calculating minimum unit price and part availability.
@@ -797,6 +872,33 @@ def add_global_prices_to_workheet(ss, start_row, start_col, total_cost_row, part
             purch_cell = xl_rowcol_to_cell(row, col_dist+1)
             unit_cell = xl_rowcol_to_cell(row, col_dist+2)
             cat_cell = xl_rowcol_to_cell(row, col_dist+4)
+            qty_cell = xl_rowcol_to_cell(row, col_dist+5)
+            try:
+                raw_price = str(dd.unit_price).replace("€", "").replace(",", ".").strip()
+                unit_val = float(raw_price) if raw_price else 0.0
+            except Exception:
+                unit_val = 0.0
+
+           
+
+
+            # formula = (
+            #     '=IFERROR('
+            #     'IF(VALUE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(F{row},"€",""),CHAR(160),"")," ",""),",","."))>1.5,'
+            #     'E{row}+1,'
+            #     'ROUNDUP(E{row}*1.15,0)),'
+            #     '0)'
+            # ).format(row=row + 1)
+
+            # # Write the formula into Purch column (not Unit)
+            # wks.write_formula(row, col_dist + 1, formula, ss.wrk_formats["part_format"])
+
+
+
+
+ 
+
+
             # Get the contents of the unit price cell for this part (row) and distributor (column+offset).
             dist_unit_prices.append(unit_cell)
             # Get the contents of the quantity purchased cell for this part and distributor
@@ -813,7 +915,15 @@ def add_global_prices_to_workheet(ss, start_row, start_col, total_cost_row, part
         ss.conditional_format(row, col_qty, criteria, 'not_manf_codes')
 
         unit_price = part.min_price if part.min_price is not None else 0
-        ext_price = part.qty_total_spreadsheet * unit_price
+        qty_val = float(part.qty_total_spreadsheet or 0)
+        
+        if unit_price > 1.5:
+            purch_val = int(qty_val) + 1
+        else:
+            from math import ceil
+            purch_val = int(ceil(qty_val * 1.15))
+            
+        ext_price = purch_val * unit_price
         total_cost += ext_price
         if num_prj > 1:
             for i, q in enumerate(part.qty):
@@ -822,7 +932,33 @@ def add_global_prices_to_workheet(ss, start_row, start_col, total_cost_row, part
         # Enter the spreadsheet formula for calculating the minimum extended price (based on the unit price found on next formula).
         formula = '=IF(AND(ISNUMBER({qty}),ISNUMBER({unit_price})),{qty}*{unit_price},"")'.format(
                   qty=xl_rowcol_to_cell(row, col_qty), unit_price=xl_rowcol_to_cell(row, col_unit_price))
-        wks.write_formula(row, col_ext_price, formula, ss.wrk_formats['currency'], value=round(ext_price, 4) if ext_price else '')
+        # --- Korrigierte Total-Formel: Total = Purch × Unit --
+        # Hole das globale Unit$ aus dem globalen Bereich
+        # --- Wenn dieser Anbieter (Distributor) keine Teile hat → setze Werte auf 0 ---
+        
+
+        try:
+            # Formel: Total = Purch (I) × Unit (F), aber 0 falls leer oder Text
+            formula_total = (
+                f'=IF(OR({xl_rowcol_to_cell(row, 8)}="",'
+                f'{xl_rowcol_to_cell(row, 5)}=""),0,'
+                f'{xl_rowcol_to_cell(row, 8)}*{xl_rowcol_to_cell(row, 5)})'
+            )
+
+
+            wks.write_formula(row, col_ext_price, formula_total, ss.wrk_formats["currency"])
+        except Exception as e:
+            print("Fehler bei Total-Formel:", e)
+
+
+
+            
+
+
+
+
+
+
 
         # Minimum unit price
         if ss.DISTRIBUTORS:
@@ -832,10 +968,19 @@ def add_global_prices_to_workheet(ss, start_row, start_col, total_cost_row, part
                               value=unit_price if unit_price else '')
             # If part is unavailable from all distributors, color quantity cell red.
             ss.conditional_format(row, col_qty, '=IF(SUM({})=0,1,0)'.format(','.join(dist_qty_avail)), 'not_available')
+            # Wenn NOT AVAILABLE (alle Verfügbarkeiten = 0) → Setze Werte auf 0
+            try:
+                # Wenn keine verfügbare Menge (laut der Excel-Regel)
+                if not dist_qty_avail or dist_qty_avail == 0:
+                    wks.write(row, col_unit_price, 0, ss.wrk_formats['part_format'])
+                    wks.write(row, col_purch, 0, ss.wrk_formats['part_format'])
+                    wks.write(row, col_ext_price, 0, ss.wrk_formats['currency'])
+            except Exception as e:
+                print("Fehler bei Not-Available-Check:", e)
+
+
             # If total available part quantity is less than needed quantity, color cell orange.
             ss.conditional_format(row, col_qty, '>', 'too_few_available', '=SUM({})'.format(','.join(dist_qty_avail)))
-            # If total purchased part quantity is less than needed quantity, color cell yellow.
-            ss.conditional_format(row, col_qty, '>', 'too_few_purchased', '=SUM({})'.format(','.join(dist_qty_purchased)))
 
         row += 1  # Go to next row.
 
@@ -849,10 +994,26 @@ def add_global_prices_to_workheet(ss, start_row, start_col, total_cost_row, part
         for i_prj in range(num_prj):
             qty_col = start_col + col['qty_prj{}'.format(i_prj)]
             row_tc = total_cost_row + ss.PRJ_INFO_ROWS*i_prj
-            wks.write_formula(row_tc, total_cost_col, '=SUMPRODUCT({qty_range},{unit_price_range})'.format(
-                              unit_price_range=unit_price_range, qty_range=xl_range(PART_INFO_FIRST_ROW, qty_col, PART_INFO_LAST_ROW)),
-                              ss.wrk_formats['total_cost_currency'], value=round(total_cost_l[i_prj] * ss.prj_info[i_prj]['qty'], 4))
-            # Create the cell to show unit cost of (each project) board parts.
+           # Berechne nur den besten Preis (grüne Zeile)
+           # Berechne nur den besten (grünen) Preis
+            # formula = (
+            #     '=SUMPRODUCT(('
+            #     '{unit_price_range}=MIN({unit_price_range}))'
+            #     '*{qty_range}*{unit_price_range})'
+            # ).format(
+            #     unit_price_range=unit_price_range,
+            #     qty_range=xl_range(PART_INFO_FIRST_ROW, qty_col, PART_INFO_LAST_ROW)
+            # )
+
+            # wks.write_formula(
+            #     row_tc,
+            #     total_cost_col,
+            #     formula,
+            #     ss.wrk_formats['total_cost_currency'],
+            #     value=round(total_cost_l[i_prj] * ss.prj_info[i_prj]['qty'], 4)
+            # )
+
+
             wks.write_formula(row_tc - 1, total_cost_col, "=TotalCost{0}/BoardQty{0}".format(i_prj), ss.wrk_formats['unit_cost_currency'],
                               value=round(total_cost_l[i_prj], 4))
         # Add total of the spreadsheet, this can be equal or bigger than
@@ -870,14 +1031,14 @@ def add_global_prices_to_workheet(ss, start_row, start_col, total_cost_row, part
     # Add the total purchase and others purchase informations.
     if ss.DISTRIBUTORS:
         next_line = row + 1
-        ss.write_string(next_line, col_unit_price, 'Total Purchase:', 'total_cost_label')
-        wks.write_comment(next_line, col_unit_price, 'This is the total of your cart across all distributors.')
+      #  ss.write_string(next_line, col_unit_price, 'Total Purchase:', 'total_cost_label')
+       # wks.write_comment(next_line, col_unit_price, 'This is the total of your cart across all distributors.')
         dist_ext_prices = []
         col_ext_dist = ss.DISTRIBUTOR_COLUMNS['ext_price']['col']
         for dist in sorted(ss.DISTRIBUTORS):
             # Get the content of the extended price
             dist_ext_prices.append(xl_rowcol_to_cell(next_line, dist_cols[dist] + col_ext_dist))
-        wks.write(next_line, col_ext_price, '=SUM({})'.format(','.join(dist_ext_prices)), ss.wrk_formats['total_cost_currency'])
+        #wks.write(next_line, col_ext_price, '=SUM({})'.format(','.join(dist_ext_prices)), ss.wrk_formats['total_cost_currency'])
         # Purchase general description, it may be used to distinguish carts of different projects.
         next_line = next_line + 1
         ss.write_string(next_line, col_unit_price, 'Purchase description:', 'description')
@@ -949,8 +1110,17 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
     col_part_num = start_col + columns['part_num']['col']
     col_purch = start_col + columns['purch']['col']
     col_unit_price = start_col + columns['unit_price']['col']
+
+
     col_ext_price = start_col + columns['ext_price']['col']
     col_moq = start_col + columns['moq']['col']
+    col_extra = start_col + columns['rechnung']['col']
+    col_rechnung = start_col + columns['rechnung']['col']
+
+
+   
+
+
     if not ss.SUPPRESS_DIST_DESC:
         col_desc = start_col + columns['description']['col']
     total_cost = 0
@@ -962,11 +1132,44 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
     # Empty object used when no data is available for a distributor
     empty_dd = DistData()
     for part in parts:
+        # --- Schritt 1: Verfügbarkeit prüfen (Not Available) ---
+        dd = part.dd.get(dist, empty_dd)
+        dist_qty_avail = dd.qty_avail
+                # --- Prüfen, ob kein Distributor das Teil hat ---
+        all_distributors_empty = all(
+            (v.qty_avail is None or v.qty_avail == 0) for v in part.dd.values()
+        )
+
+        if all_distributors_empty:
+            # Kein Distributor hat das Teil → setze alles auf 0
+            wks.write(row, col_unit_price, 0, ss.wrk_formats['part_format'])
+            wks.write(row, col_purch, 0, ss.wrk_formats['part_format'])
+            wks.write(row, col_ext_price, 0, ss.wrk_formats['currency'])
+            continue
+
+
+        not_available = False
+        if not dist_qty_avail:
+            not_available = True
+        elif isinstance(dist_qty_avail, (list, tuple)):
+            not_available = all((v is None or v == 0 or v == '') for v in dist_qty_avail)
+        elif isinstance(dist_qty_avail, dict):
+            not_available = all((v is None or v == 0 or v == '') for v in dist_qty_avail.values())
+
         # Get the DistData for this distributor
         dd = part.dd.get(dist, empty_dd)
         dist_part_num = dd.part_num  # Get the distributor part number.
         price_tiers = dd.price_tiers  # Extract price tiers from distributor HTML page tree.
         dist_qty_avail = dd.qty_avail
+        try:
+            if not dist_qty_avail or dist_qty_avail == 0:
+                # Setze Unit, Purch und Total auf 0
+                wks.write(row, col_unit_price, 0, ss.wrk_formats['part_format'])
+                wks.write(row, col_purch, 0, ss.wrk_formats['part_format'])
+                wks.write(row, col_ext_price, 0, ss.wrk_formats['currency'])
+                continue  # überspringe den Rest für diese Zeile
+        except Exception as e:
+            print("Fehler bei NotAvailable:", e)
         # If the part number doesn't exist, just leave this row blank.
         # if dist_part_num is None or dist_qty_avail is None or len(price_tiers) == 0:
         if dist_part_num is None:
@@ -1004,13 +1207,131 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
             wks.write(row, col_avail, dist_qty_avail, ss.wrk_formats['part_format'])
             qty_avail_comment = dd.qty_avail_comment
         else:
-            wks.write(row, col_avail, 'NonStk', ss.wrk_formats['not_stocked'])
+            wks.write(row, col_avail, 'OOS= out of Stock', ss.wrk_formats['not_stocked'])
             qty_avail_comment = dd.qty_avail_comment or 'This part is listed but is not stocked.'
-        if qty_avail_comment:
-            wks.write_comment(row, col_avail, qty_avail_comment)
+            if qty_avail_comment:
+                # --- Schritt 2: Wenn Not Available → Purch, Unit, Total = 0 ---
+                if not_available:
+                    wks.write(row, col_purch, 0, ss.wrk_formats["part_format"])
+                    wks.write(row, col_unit_price, 0, ss.wrk_formats["part_format"])
+                    wks.write(row, col_ext_price, 0, ss.wrk_formats["currency"])
+
+                wks.write_comment(row, col_avail, qty_avail_comment)
+      
+
+    
+
+
+
+
+                # --- PURCH berechnen: Immer +15 % direkt in Python ---
+                # --- Purch berechnen: +15 % direkt aus Excel-Zelle (Qty in Spalte F) ---
+        # from math import ceil
+        # try:
+        #     qty_cell = xl_rowcol_to_cell(row, 5)  # Spalte F = Qty
+        #     formula_purch = f"=ROUNDUP(VALUE({qty_cell})*1.15,0)"
+        #     wks.write_formula(row, col_purch, formula_purch, ss.wrk_formats['part_format'])
+        # except Exception as e:
+        #     print('Fehler bei Purch-Formel:', e)
+
 
         # Purchase quantity always starts as blank because nothing has been purchased yet.
-        wks.write(row, col_purch, '', ss.wrk_formats['part_format'])
+        # Berechne Purch wie im globalen Bereich
+        # try:
+        #     unit_val = float(str(dd.unit_price).replace('€', '').replace(',', '.').strip()) if dd.unit_price else 0.0
+        # except Exception:
+        #     unit_val = 0.0
+        # qty_val = float(part.qty_total_spreadsheet or 0)
+
+        # if unit_val > 1.5:
+        #     purch_val = int(qty_val) + 1
+        # else:
+        #     from math import ceil
+        #     purch_val = int(ceil(qty_val * 1.15))
+
+        
+
+
+
+
+
+
+        
+        # wks.write(row, col_purch, purch_val, ss.wrk_formats['part_format'])
+        from math import ceil
+
+        try:
+            # 1️⃣ تنظيف وقراءة Unit$
+            if dd.unit_price:
+                raw_unit = (
+                    str(dd.unit_price)
+                    .replace('€', '')
+                    .replace('\xa0', '')
+                    .replace('\u00a0', '')
+                    .replace(' ', '')
+                    .replace(',', '.')
+                    .strip()
+                )
+                cleaned_unit = ''.join(ch for ch in raw_unit if ch.isdigit() or ch == '.')
+                unit_val = float(cleaned_unit) if cleaned_unit else 0.0
+            else:
+                unit_val = 0.0
+        except Exception:
+            unit_val = 0.0
+
+        try:
+            # 2️⃣ تنظيف وقراءة Menge (Qty)
+            raw_qty = str(part.fields.get('qty') or part.qty_total_spreadsheet or 0)
+            qty_val = float(
+                raw_qty.replace(',', '.')
+                .replace(' ', '')
+                .replace('\xa0', '')
+                .replace('\u00a0', '')
+                .strip()
+            )
+        except Exception:
+            qty_val = 0.0
+
+        # 3️⃣ حساب Purch تلقائياً
+        if unit_val > 1.5:
+            purch_val = int(qty_val) + 1
+        else:
+            purch_val = int(ceil(qty_val * 1.15))
+
+        # 4️⃣ كتابة النتيجة في Excel
+        wks.write(row, col_purch, purch_val, ss.wrk_formats['part_format'])
+
+        # 5️⃣ (اختياري) طباعة القيم في الكونسول لتتأكد بنفسك
+        print(f"Row {row+1}: Qty={qty_val}, Unit={unit_val}, Purch={purch_val}")
+
+        # --- TOTAL berechnen: Purch * Unit ---
+        # Formel: Purch = Qty * 1.15 (immer aufrunden)
+        # --- Formel in Excel: Purch = ROUNDUP(Qty * 1.15, 0) ---
+              # --- Purch berechnen: Immer +15 % aus Spalte F (Qty), egal ob Text oder Zahl ---
+        # try:
+        #     from math import ceil
+        #     qty_cell = xl_rowcol_to_cell(row, 5)  # Spalte F = Qty
+        #     # Wandelt Text ("100") in Zahl um, ersetzt Komma durch Punkt, multipliziert mit 1.15 und rundet auf
+        #     formula_purch = f"=IFERROR(ROUNDUP(VALUE(SUBSTITUTE(TRIM({qty_cell}),\",\",\".\"))*1.15,0),0)"
+        #     wks.write_formula(row, col_purch, formula_purch, ss.wrk_formats['part_format'])
+        # except Exception as e:
+        #     print('Fehler bei Purch-Formel:', e)
+
+
+
+        try:
+            ext_price = purch_val * unit_val
+        except Exception:
+            ext_price = 0.0
+
+        # Schreibe das Ergebnis in die Total-Spalte
+# Formel direkt in Excel: Total = Purch * Unit
+        wks.write_formula(
+            row,
+            col_ext_price,
+            f'={xl_rowcol_to_cell(row, col_unit_price)}*{xl_rowcol_to_cell(row, col_purch)}',
+            ss.wrk_formats['part_format']
+        )
 
         if not ss.SUPPRESS_DIST_DESC and 'desc' in dist_info_dist:
             ss.write_string(row, col_desc, dist_info_dist['desc'], 'part_format')
@@ -1070,6 +1391,10 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
             blank_up = part.qty_total_spreadsheet < minimum_order_qty
             # Add the formula, but blank the cell on error
             wks.write_formula(row, col_unit_price, '=IFERROR({},"")'.format(uprice_f), ss.wrk_formats['currency_unit'], value='' if blank_up else unit_price)
+            # --- Best Price formula ---
+           # Best Price formula
+           
+
             # Add the comment
             wks.write_comment(row, col_unit_price, price_break_info)
             if not blank_up and (part.min_price is None or unit_price < part.min_price):
@@ -1081,15 +1406,54 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
             #
             # Ext$ (purch qty * unit price.)
             #
-            ext_price = part.qty_total_spreadsheet*unit_price
+            ext_price = purch_val * unit_price
+
             if not blank_up:
                 total_cost += ext_price
-            wks.write_formula(row, col_ext_price, '=IFERROR(IF({purch_qty}="",{needed_qty},{purch_qty})*{unit_price},"")'.format(
-                              needed_qty=part_qty_cell,
-                              purch_qty=purch_cell,
-                              unit_price=xl_rowcol_to_cell(row, col_unit_price)), ss.wrk_formats['currency'],
-                              # Limit the resolution (to make it more reproducible)
-                              value='' if blank_up else round(ext_price, 4))
+            wks.write_formula(
+                row,
+                col_ext_price,
+                '=IFERROR({purch_qty}*{unit_price},"")'.format(
+                    purch_qty=xl_rowcol_to_cell(row, col_purch),
+                    unit_price=xl_rowcol_to_cell(row, col_unit_price)
+                        ),
+                ss.wrk_formats['part_format']
+            )
+            purch_formula = "=VALUE({qty})+IFERROR(VALUE({rechnung}),0)".format(
+                qty=xl_rowcol_to_cell(row, part_qty_col),
+                rechnung=xl_rowcol_to_cell(row, col_rechnung)
+            )
+            wks.write_formula(row, col_purch, purch_formula, ss.wrk_formats['part_format'])
+
+            # purch == avail 
+         
+
+############################################################################
+
+
+            # ---- Best Price pro Distributor ----
+            col_best_price = col_ext_price + 2  # direkt nach total column
+
+            
+            best_price_formula = (
+                '=IF({this_total}=MIN({all_totals}),{this_total},0)'
+            ).format(
+                this_total=xl_rowcol_to_cell(row, col_ext_price),
+               all_totals=",".join([
+                xl_rowcol_to_cell(row, 11),  # M = Digi-Key total
+                xl_rowcol_to_cell(row, 19)   # T = TME total
+            ])
+
+            )       
+
+            wks.write_formula(row, col_best_price, best_price_formula, ss.wrk_formats['part_format'])
+          
+
+
+
+
+
+
             # Update the number of parts found and total cost for multiprojects
             if num_prj > 1:
                 for i, q in enumerate(part.qty):
@@ -1119,6 +1483,9 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
                 # Unit price cell that contains the best price.
                 # part_qty_col+1 is the global data cell holding the minimum unit price for this part.
                 ss.conditional_format(row, col_unit_price, '<=', 'best_price', xl_rowcol_to_cell(row, part_qty_col+1))
+                # Holen wir den Zellwert von total (ext_price)
+           
+
                 # Mark cells with a MOQ bigger than what we need
                 if blank_up:
                     criteria = '=AND({qt}<{moq},{q}<{moq})'.format(qt=part_qty_cell, q=purch_cell, moq=minimum_order_qty)
@@ -1141,9 +1508,37 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
             qty_prj_col = part_qty_col - (num_prj - i_prj)
             qty_prj_range = xl_range(PART_INFO_FIRST_ROW, qty_prj_col, PART_INFO_LAST_ROW)
             row = total_cost_row + i_prj * ss.PRJ_INFO_ROWS
-            wks.write_formula(row, col_ext_price, '=SUMPRODUCT({qty_range},{unit_price_range})'.format(qty_range=qty_prj_range,
-                              unit_price_range=xl_range(PART_INFO_FIRST_ROW, col_unit_price, PART_INFO_LAST_ROW)),
-                              ss.wrk_formats['total_cost_currency'], value=round(total_cost_l[i_prj], 4))
+            # Finde den niedrigsten Unit-Preis (best price) für diesen Distributor
+            unit_prices = []
+            for r in range(PART_INFO_FIRST_ROW, PART_INFO_LAST_ROW + 1):
+                best_price_formula = (
+                    '=IF({this_unit}=MIN({all_units}), {this_unit}, 0)'
+                ).format(
+                    this_unit=xl_rowcol_to_cell(row, col_unit_price),
+                    all_units=",".join(unit_prices)
+                )
+
+                wks.write_formula(row, col_best_price, best_price_formula, ss.wrk_formats['part_format'])
+
+                cell = xl_rowcol_to_cell(r, col_unit_price)
+                unit_prices.append(cell)
+
+            best_price_formula = "=MIN({})".format(",".join(unit_prices))
+
+            # --- Gesamtpreis basierend auf Purch statt Qty ---
+            wks.write_formula(
+            row,
+            col_ext_price,
+            '=IFERROR(SUMPRODUCT(({unit_price_range}=MIN({unit_price_range}))*{purch_range}*{unit_price_range}),0)'.format(
+                purch_range=xl_range(PART_INFO_FIRST_ROW, col_purch, PART_INFO_LAST_ROW),
+                unit_price_range=xl_range(PART_INFO_FIRST_ROW, col_unit_price, PART_INFO_LAST_ROW)
+            ),
+            ss.wrk_formats['total_cost_currency'],
+            value=round(total_cost_l[i_prj], 4)
+        )
+            
+
+
             # Show how many parts were found at this distributor.
             wks.write_formula(row, col_part_num, '=COUNTIFS({price_range},"<>",{qty_range},"<>0",{qty_range},"<>")&" of "&COUNTIFS({qty_range},"<>0",'
                               '{qty_range},"<>")&" parts found"'.format(price_range=ext_price_range, qty_range=qty_prj_range),
@@ -1152,9 +1547,38 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
         total_cost_row = PART_INFO_FIRST_ROW - 3  # Shift the total price in this distributor.
 
     # Sum the extended prices for all the parts to get the total cost from this distributor.
-    wks.write_formula(total_cost_row, col_ext_price, '=SUM({sum_range})'.format(sum_range=ext_price_range), ss.wrk_formats['total_cost_currency'],
-                      # Limit the resolution (to make it more reproducible)
-                      value=round(total_cost, 4))
+    #     --- Gesamtpreis korrekt mit Purch berechnen ---
+        wks.write_formula(
+            total_cost_row,
+            col_ext_price,
+            '=SUMPRODUCT({purch_range},{unit_price_range})'.format(
+                purch_range=xl_range(PART_INFO_FIRST_ROW, col_purch, PART_INFO_LAST_ROW),
+                unit_price_range=xl_range(PART_INFO_FIRST_ROW, col_unit_price, PART_INFO_LAST_ROW)
+            ),
+            ss.wrk_formats['total_cost_currency'],
+            value=round(total_cost, 4)
+        )
+        # wks.write_formula(
+        #     total_cost_row,
+        #     col_ext_price,
+        #     '=SUM({best_price_range})'.format(
+        #         best_price_range=xl_range(PART_INFO_FIRST_ROW, col_best_price, PART_INFO_LAST_ROW)
+        #     ),
+        #     ss.wrk_formats['total_cost_currency'],
+        #     value=round(total_cost, 4)
+        #         )
+
+        wks.write_formula(
+            ORDER_HEADER,
+            col_ext_price,
+            '=SUMPRODUCT({purch_range},{best_price_range})'.format(
+                purch_range=xl_range(PART_INFO_FIRST_ROW, col_purch, PART_INFO_LAST_ROW),
+                best_price_range=xl_range(PART_INFO_FIRST_ROW, col_best_price, PART_INFO_LAST_ROW)
+            ),
+            ss.wrk_formats['total_cost_currency']
+        )
+
+
     # Show how many parts were found at this distributor.
     # Note: the formula could help the user to remove prices and add parts
     wks.write_formula(total_cost_row, col_part_num, '=(COUNTA({count_range})&" of "&ROWS({count_range})&" parts found")'.format(
@@ -1168,10 +1592,34 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
     # Write the header and how many parts are being purchased.
     ORDER_HEADER = PART_INFO_LAST_ROW + 2
     purch_range = xl_range(PART_INFO_FIRST_ROW, col_purch, PART_INFO_LAST_ROW)
-    # Expended in this distributor.
-    wks.write_formula(ORDER_HEADER, col_ext_price, '=SUMIF({count_range},">0",{price_range})'.format(
-                      count_range=purch_range,
-                      price_range=ext_price_range), ss.wrk_formats['total_cost_currency'])
+   # Expended in this distributor.
+    #--- Korrigierte Gesamtsumme: SUMPRODUCT(Purch * Unit) ---
+    # wks.write_formula(
+    #     ORDER_HEADER,
+    #     col_ext_price,
+    #     '=SUMPRODUCT({purch_range},{unit_price_range})'.format(
+    #         purch_range=xl_range(PART_INFO_FIRST_ROW, col_purch, PART_INFO_LAST_ROW),
+    #         unit_price_range=xl_range(PART_INFO_FIRST_ROW, col_unit_price, PART_INFO_LAST_ROW)
+    #     ),
+    #     ss.wrk_formats['total_cost_currency']
+    # )
+    # Sum ONLY the green (cheapest) totals:
+# =SUMIF(total_range, "<>0")
+    wks.write_formula(
+    ORDER_HEADER,
+    col_ext_price,
+    '=SUM({best_price_range})'.format(
+        best_price_range=xl_range(PART_INFO_FIRST_ROW, col_best_price, PART_INFO_LAST_ROW)
+    ),
+    ss.wrk_formats['total_cost_currency']
+)
+
+ 
+
+    
+
+
+
     # Quantity of purchased parts in this distributor.
     do_count = 'COUNTIF({range},">0")'.format(range=purch_range)
     wks.write_formula(ORDER_HEADER, col_purch, '=IFERROR(IF({count}>0,{count}&" of "&(ROWS({range_moq})-COUNTBLANK({range_moq}))&" parts purchased",""),"")'.
