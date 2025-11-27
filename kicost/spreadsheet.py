@@ -1719,7 +1719,17 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
     part_range = xl_range(first_part, part_col, last_part)
     qty_col = col_purch
     qty_range = xl_range(first_part, qty_col, last_part)
-    conditional = '=IF(ISNUMBER({qty})*({qty}>={moq})*({catn}<>""),{{}}&CHAR(13),"")'.format(qty=qty_range, catn=part_range, moq=moq_range)
+    bestprice_range = xl_range(first_part, col_best_price, last_part)
+
+    #conditional = '=IF(ISNUMBER({qty})*({qty}>={moq})*({catn}<>""),{{}}&CHAR(13),"")'.format(qty=qty_range, catn=part_range, moq=moq_range)
+    conditional = '=IF(ISNUMBER({qty})*({qty}>={moq})*({catn}<>"")*({bestprice}<>0),{{}}&CHAR(13),"")'.format(
+            qty=qty_range,
+            moq=moq_range,
+            catn=part_range,
+            bestprice=bestprice_range
+    )
+
+
     array_range = xl_range(ORDER_FIRST_ROW, ORDER_START_COL, ORDER_FIRST_ROW + num_parts - 1)
     # Concatenation operator plus distributor code delimiter.
     delimiter = '&"' + order.delimiter + '"&'
@@ -1750,8 +1760,31 @@ def add_dist_to_worksheet(ss, columns_global, start_row, start_col, unit_cost_ro
     # We also put the order.info text here, to make it more visible, will go away as soon a component is purchased
     value = order.info if order.info else ''
     # Just join the texts using CONCATENATE
-    wks.write_formula(first_row, ORDER_START_COL, '=CONCATENATE({})'.format(','.join(order_cells)), ss.wrk_formats['order'], value=value)
+    # wks.write_formula(first_row, ORDER_START_COL, '=CONCATENATE({})'.format(','.join(order_cells)), ss.wrk_formats['order'], value=value)
+    # if value:
+    #     wks.write_comment(first_row, ORDER_START_COL, value)
+    # --- Filter erstellen ---
+  # col_best_price zu Liste machen, falls es nur ein einzelner Wert ist
+    if isinstance(col_best_price, (int, float)):
+        col_best_price = [col_best_price] * len(order_cells)
+
+    # Jetzt filtern
+    filtered_cells = [
+        cell
+        for cell, price in zip(order_cells, col_best_price)
+        if price != 0
+    ]
+
+    if not filtered_cells:
+        filtered_cells = ["\"\""]
+
+    formula = '=CONCATENATE({})'.format(",".join(filtered_cells))
+
+    wks.write_formula(first_row, ORDER_START_COL, formula,
+                    ss.wrk_formats['order'], value=value)
+
     if value:
         wks.write_comment(first_row, ORDER_START_COL, value)
+
 
     return start_col + num_cols  # Return column following the globals so we know where to start next set of cells.
